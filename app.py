@@ -1,7 +1,5 @@
 # app.py
-# Dashboad de Alertas Meteorológicas DMC en Streamlit
-# Requisitos:
-#   pip install streamlit geopandas pandas requests pydeck
+# Dashboard de Alertas Meteorológicas DMC en Streamlit
 
 import io
 import requests
@@ -24,39 +22,26 @@ st.caption("Visualización de Avisos, Alertas y Alarmas meteorológicas a partir
 
 DATA_URL = "https://storage.googleapis.com/geodata-dmc-events-bucket/eventos_AAA_fusionados_ordenados.geojson"
 
-# ------------------------------------------------------------------
-# FUNCIONES AUXILIARES
-# ------------------------------------------------------------------
-def find_column(df: pd.DataFrame, candidates: list[str], default: str | None = None) -> str | None:
-    """
-    Busca la primera columna existente en el DataFrame dentro de la lista 'candidates'.
-    Devuelve el nombre de la columna o 'default' si no encuentra ninguna.
-    """
-    for c in candidates:
-        if c in df.columns:
-            return c
-    return default
-
-
-@st.cache_data(show_spinner=True)
-def load_data(url: str) -> gpd.GeoDataFrame:
-    """
-    Descarga el GeoJSON y lo carga como GeoDataFrame.
-    """
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-    buffer = io.BytesIO(resp.content)
-    gdf = gpd.read_file(buffer)
-
-    # Normalización ligera de nombres de columnas (opcional)
-    gdf.columns = [c.strip() for c in gdf.columns]
-
-    return gdf
-
+# Nombres de columnas en tu GeoJSON
+COL_CODIGO = "codigoMeteo"
+COL_TIPO = "tipo"
+COL_REGION = "reg"
+COL_ORDEN = "orden"
+COL_FECHA = "fechaEmision"  # ajusta si se llama distinto
+COL_ESTADO = "estado"       # opcional
+COL_FENOMENO = "fenomeno"   # opcional
 
 # ------------------------------------------------------------------
 # CARGA DE DATOS
 # ------------------------------------------------------------------
+@st.cache_data(show_spinner=True)
+def load_data(url: str) -> gpd.GeoDataFrame:
+    resp = requests.get(url, timeout=30)
+    resp.raise_for_status()
+    buffer = io.BytesIO(resp.content)
+    gdf = gpd.read_file(buffer)
+    return gdf
+
 with st.spinner("Cargando datos meteorológicos desde la DMC..."):
     try:
         gdf = load_data(DATA_URL)
@@ -68,58 +53,48 @@ if gdf.empty:
     st.warning("El archivo GeoJSON se cargó correctamente pero no contiene registros.")
     st.stop()
 
-# ------------------------------------------------------------------
-# DETECCIÓN DE CAMPOS (ADÁPTALO SI LO REQUIERES)
-# ------------------------------------------------------------------
-# NOTA: ajusta las listas de candidatos si tus campos tienen otros nombres.
-col_tipo = find_column(gdf, ["tipoEvento", "tipo", "tipoAviso", "tipo_aaa"])
-col_region = find_column(gdf, ["region", "Region", "region_nombre", "glosa_region"])
-col_codigo = find_column(gdf, ["codigo", "codigoEvento", "idEvento", "codigo_aaa"])
-col_fenomeno = find_column(gdf, ["fenomeno", "Fenomeno", "evento", "titulo", "nombreEvento"])
-col_fecha_emision = find_column(gdf, ["fechaEmision", "fecha_emision", "fecha", "fecha_publicacion"])
-col_estado = find_column(gdf, ["estado", "estadoEvento", "estado_aaa"])
+# Normalizaciones básicas
+if COL_FECHA in gdf.columns:
+    gdf[COL_FECHA] = pd.to_datetime(gdf[COL_FECHA], errors="coerce")
 
-# Conversión de fecha
-if col_fecha_emision:
-    gdf[col_fecha_emision] = pd.to_datetime(gdf[col_fecha_emision], errors="coerce")
-
-# Orden lógico de tipo de aviso
-tipo_order = ["Aviso", "Alerta", "Alarma"]
-if col_tipo:
-    gdf[col_tipo] = gdf[col_tipo].astype(str).str.title()
-    gdf[col_tipo] = pd.Categorical(gdf[col_tipo], categories=tipo_order, ordered=True)
+if COL_TIPO in gdf.columns:
+    gdf[COL_TIPO] = gdf[COL_TIPO].astype(str).str.title()
 
 # ------------------------------------------------------------------
-# BARRA LATERAL DE FILTROS
+# FILTROS EN SIDEBAR
 # ------------------------------------------------------------------
 st.sidebar.header("Filtros")
 
-# Filtro por tipo
-if col_tipo:
-    tipos_disponibles = [t for t in tipo_order if t in gdf[col_tipo].unique()]
-    tipos_seleccionados = st.sidebar.multiselect(
-        "Tipo de evento",
-        options=tipos_disponibles,
-        default=tipos_disponibles,
-    )
-else:
-    tipos_seleccionados = None
+# Tipo
+tipos_disponibles = sorted(gdf[COL_TIPO].dropna().astype(str).unique()) if COL_TIPO in gdf.columns else []
+tipos_seleccionados = st.sidebar.multiselect(
+    "Tipo de evento",
+    options=tipos_disponibles,
+    default=tipos_disponibles,
+) if tipos_disponibles else []
 
-# Filtro por región
-if col_region:
-    regiones = sorted(gdf[col_region].dropna().astype(str).unique())
-    region_sel = st.sidebar.selectbox(
-        "Región",
-        options=["Todas"] + regiones,
-        index=0,
-    )
-else:
-    region_sel = "Todas"
+# Región
+regiones = (
+    gdf[[COL_REGION, COL_ORDEN]]
+    .dropna(subset=[COL_REGION])
+    .drop_duplicates()
+    .sort_values(COL_ORDEN)[COL_REGION]
+    .astype(str)
+    .tolist()
+    if (COL_REGION in gdf.columns and COL_ORDEN in gdf.columns)
+    else []
+)
 
-# Filtro por rango de fechas
-if col_fecha_emision and gdf[col_fecha_emision].notna().any():
-    min_date = gdf[col_fecha_emision].min().date()
-    max_date = gdf[col_fecha_emision].max().date()
+region_sel = st.sidebar.selectbox(
+    "Región",
+    options=["Todas"] + regiones if regiones else ["Todas"],
+    index=0,
+)
+
+# Rango de fechas
+if COL_FECHA in gdf.columns and gdf[COL_FECHA].notna().any():
+    min_date = gdf[COL_FECHA].min().date()
+    max_date = gdf[COL_FECHA].max().date()
     rango_fechas = st.sidebar.date_input(
         "Rango de fecha de emisión",
         value=(min_date, max_date),
@@ -134,26 +109,27 @@ else:
 # ------------------------------------------------------------------
 gdf_filtrado = gdf.copy()
 
-# Tipo
-if col_tipo and tipos_seleccionados:
-    gdf_filtrado = gdf_filtrado[gdf_filtrado[col_tipo].isin(tipos_seleccionados)]
+if tipos_seleccionados and COL_TIPO in gdf_filtrado.columns:
+    gdf_filtrado = gdf_filtrado[gdf_filtrado[COL_TIPO].isin(tipos_seleccionados)]
 
-# Región
-if col_region and region_sel != "Todas":
-    gdf_filtrado = gdf_filtrado[gdf_filtrado[col_region].astype(str) == region_sel]
+if region_sel != "Todas" and COL_REGION in gdf_filtrado.columns:
+    gdf_filtrado = gdf_filtrado[gdf_filtrado[COL_REGION].astype(str) == region_sel]
 
-# Rango de fechas
-if col_fecha_emision and isinstance(rango_fechas, (list, tuple)) and len(rango_fechas) == 2:
+if (
+    COL_FECHA in gdf_filtrado.columns
+    and isinstance(rango_fechas, (list, tuple))
+    and len(rango_fechas) == 2
+):
     desde, hasta = rango_fechas
-    mask = (gdf_filtrado[col_fecha_emision].dt.date >= desde) & (
-        gdf_filtrado[col_fecha_emision].dt.date <= hasta
+    mask = (gdf_filtrado[COL_FECHA].dt.date >= desde) & (
+        gdf_filtrado[COL_FECHA].dt.date <= hasta
     )
     gdf_filtrado = gdf_filtrado[mask]
 
-st.caption(f"Registros visualizados: {len(gdf_filtrado)} (de {len(gdf)})")
+st.caption(f"Registros visualizados (filas GeoJSON): {len(gdf_filtrado)}")
 
 # ------------------------------------------------------------------
-# TARJETAS KPI (Aviso / Alerta / Alarma)
+# KPI NACIONALES POR EVENTO (UN códigoMeteo = 1 evento)
 # ------------------------------------------------------------------
 def kpi_card(title: str, value: int, bg_color: str):
     st.markdown(
@@ -168,22 +144,22 @@ def kpi_card(title: str, value: int, bg_color: str):
         ">
             <div style="font-size:1.25rem;font-weight:600;margin-bottom:0.25rem;">{title}</div>
             <div style="font-size:3rem;font-weight:800;margin-bottom:0.5rem;">{value}</div>
-            <div style="font-size:0.9rem;">a nivel nacional</div>
+            <div style="font-size:0.9rem;">a nivel nacional (eventos únicos)</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-
-col_k1, col_k2, col_k3 = st.columns(3)
-
-if col_tipo:
-    count_aviso = gdf_filtrado[gdf_filtrado[col_tipo] == "Aviso"].shape[0]
-    count_alerta = gdf_filtrado[gdf_filtrado[col_tipo] == "Alerta"].shape[0]
-    count_alarma = gdf_filtrado[gdf_filtrado[col_tipo] == "Alarma"].shape[0]
+# eventos únicos a nivel nacional
+if {COL_CODIGO, COL_TIPO}.issubset(gdf_filtrado.columns):
+    eventos_nacionales = gdf_filtrado[[COL_CODIGO, COL_TIPO]].drop_duplicates()
+    count_aviso = eventos_nacionales[eventos_nacionales[COL_TIPO] == "Aviso"].shape[0]
+    count_alerta = eventos_nacionales[eventos_nacionales[COL_TIPO] == "Alerta"].shape[0]
+    count_alarma = eventos_nacionales[eventos_nacionales[COL_TIPO] == "Alarma"].shape[0]
 else:
     count_aviso = count_alerta = count_alarma = 0
 
+col_k1, col_k2, col_k3 = st.columns(3)
 with col_k1:
     kpi_card("Aviso(s)", count_aviso, "#f7e86e")
 with col_k2:
@@ -194,47 +170,54 @@ with col_k3:
 st.markdown("---")
 
 # ------------------------------------------------------------------
-# DISTRIBUCIÓN POR REGIÓN + TABLA DE EVENTOS
+# DISTRIBUCIÓN POR REGIÓN (EVENTO-REGIÓN ÚNICO) + TABLA
 # ------------------------------------------------------------------
 left_col, right_col = st.columns([1.2, 1.8])
 
 with left_col:
-    st.subheader("Avisos, Alertas y Alarmas por región")
+    st.subheader("Avisos, Alertas y Alarmas por región (eventos únicos)")
 
-    if col_region and col_tipo and not gdf_filtrado.empty:
-        df_region = (
-            gdf_filtrado.groupby(col_region)[col_tipo]
-            .count()
-            .sort_values(ascending=False)
-            .rename("Total")
-            .reset_index()
+    if {COL_REGION, COL_ORDEN, COL_CODIGO}.issubset(gdf_filtrado.columns):
+        # cada combinación codigoMeteo + reg es un evento único en esa región
+        df_reg = (
+            gdf_filtrado[[COL_REGION, COL_ORDEN, COL_CODIGO]]
+            .dropna(subset=[COL_REGION])
+            .drop_duplicates()
+            .groupby([COL_REGION, COL_ORDEN])[COL_CODIGO]
+            .nunique()
+            .reset_index(name="Total")
+            .sort_values(COL_ORDEN)
         )
-        st.bar_chart(
-            df_region.set_index(col_region)["Total"],
-            use_container_width=True,
-        )
+
+        # index ordenado por 'orden'
+        df_reg_plot = df_reg.set_index(COL_REGION)["Total"]
+        st.bar_chart(df_reg_plot, use_container_width=True)
     else:
         st.info("No hay información suficiente para agrupar por región.")
 
-    # Tabla resumida de eventos
-    st.subheader("Detalle de eventos")
+    # TABLA DETALLADA: evento-región únicos
+    st.subheader("Detalle de eventos por región")
 
-    columnas_tabla = {}
-    if col_tipo:
-        columnas_tabla["Tipo"] = col_tipo
-    if col_region:
-        columnas_tabla["Región"] = col_region
-    if col_codigo:
-        columnas_tabla["Código"] = col_codigo
-    if col_fenomeno:
-        columnas_tabla["Fenómeno"] = col_fenomeno
-    if col_fecha_emision:
-        columnas_tabla["Emisión"] = col_fecha_emision
-    if col_estado:
-        columnas_tabla["Estado"] = col_estado
+    columnas = []
+    renombres = {}
+    for col, nombre in [
+        (COL_TIPO, "Tipo"),
+        (COL_REGION, "Región"),
+        (COL_CODIGO, "Código"),
+        (COL_FENOMENO, "Fenómeno"),
+        (COL_FECHA, "Emisión"),
+        (COL_ESTADO, "Estado"),
+    ]:
+        if col in gdf_filtrado.columns:
+            columnas.append(col)
+            renombres[col] = nombre
 
-    if columnas_tabla:
-        df_tabla = gdf_filtrado[list(columnas_tabla.values())].rename(columns={v: k for k, v in columnas_tabla.items()})
+    if columnas:
+        df_tabla = (
+            gdf_filtrado[columnas + [COL_CODIGO, COL_REGION]]
+            .drop_duplicates(subset=[COL_CODIGO, COL_REGION])
+            .rename(columns=renombres)
+        )
         st.dataframe(df_tabla, use_container_width=True, height=420)
     else:
         st.info("No se encontraron columnas estándar para mostrar la tabla de eventos.")
@@ -242,30 +225,19 @@ with left_col:
 with right_col:
     st.subheader("Mapa de eventos activos")
 
-    if not gdf_filtrado.empty and gdf_filtrado.geometry.notna().any():
-        # Centro aproximado en Chile
+    if gdf_filtrado.geometry.notna().any():
         view_state = pdk.ViewState(latitude=-30.5, longitude=-71.0, zoom=3.4)
 
-        # Color por tipo de evento
-        def get_color(tipo: str) -> list[int]:
-            if tipo == "Aviso":
-                return [255, 230, 128, 160]
-            if tipo == "Alerta":
-                return [255, 165, 0, 180]
-            if tipo == "Alarma":
-                return [255, 0, 0, 200]
-            return [150, 150, 150, 140]
-
-        # Construir lista de features para el layer
+        # construimos un GeoJSON ligero para el mapa
         data_geojson = []
         for _, row in gdf_filtrado.iterrows():
             feature = {
                 "type": "Feature",
                 "properties": {
-                    "tipo": str(row[col_tipo]) if col_tipo else "",
-                    "region": str(row[col_region]) if col_region else "",
-                    "codigo": str(row[col_codigo]) if col_codigo else "",
-                    "fenomeno": str(row[col_fenomeno]) if col_fenomeno else "",
+                    "tipo": str(row.get(COL_TIPO, "")),
+                    "region": str(row.get(COL_REGION, "")),
+                    "codigo": str(row.get(COL_CODIGO, "")),
+                    "fenomeno": str(row.get(COL_FENOMENO, "")),
                 },
                 "geometry": row.geometry.__geo_interface__,
             }
@@ -308,3 +280,4 @@ with st.expander("Ver datos en bruto (GeoDataFrame)"):
     st.write(gdf.head())
     st.text("Columnas disponibles:")
     st.write(list(gdf.columns))
+
