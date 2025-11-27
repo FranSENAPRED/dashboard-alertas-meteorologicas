@@ -301,7 +301,7 @@ with right_col:
                 map_style=None,  # evita depender de token de Mapbox
             )
 
-            st.pydeck_chart(deck, use_container_width=True)
+            st.pydeck_chart(deck, use_container_width=True, height=700)
         else:
             st.info("No hay geometrías válidas para mostrar en el mapa.")
     else:
