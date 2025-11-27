@@ -254,7 +254,7 @@ with right_col:
     st.subheader("Mapa de eventos activos")
 
     if "geometry" in gdf_filtrado.columns and gdf_filtrado.geometry.notna().any():
-        view_state = pdk.ViewState(latitude=-30.5, longitude=-71.0, zoom=3.0)
+        view_state = pdk.ViewState(latitude=-33.5, longitude=-71.0, zoom=3.0)
 
         features = []
         for _, row in gdf_filtrado.iterrows():
