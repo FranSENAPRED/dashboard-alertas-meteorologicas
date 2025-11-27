@@ -7,6 +7,7 @@ import pandas as pd
 import geopandas as gpd
 import pydeck as pdk
 import streamlit as st
+import altair as alt
 
 # ------------------------------------------------------------------
 # CONFIGURACIÓN BÁSICA
@@ -27,9 +28,9 @@ COL_CODIGO = "codigoMeteo"
 COL_TIPO = "tipo"
 COL_REGION = "reg"
 COL_ORDEN = "orden"
-COL_FECHA = "fechaEmision"  # ajusta si se llama distinto
-COL_ESTADO = "estado"       # opcional
-COL_FENOMENO = "fenomeno"   # opcional
+COL_FECHA = "fechaEmision"   # ajusta si se llama distinto
+COL_ESTADO = "estado"        # opcional
+COL_FENOMENO = "fenomeno"    # opcional
 
 # ------------------------------------------------------------------
 # CARGA DE DATOS
@@ -40,7 +41,13 @@ def load_data(url: str) -> gpd.GeoDataFrame:
     resp.raise_for_status()
     buffer = io.BytesIO(resp.content)
     gdf = gpd.read_file(buffer)
+
+    # Asegurar CRS a WGS84 (lat/long) para el mapa
+    if gdf.crs is not None and gdf.crs.to_epsg() != 4326:
+        gdf = gdf.to_crs(epsg=4326)
+
     return gdf
+
 
 with st.spinner("Cargando datos meteorológicos desde la DMC..."):
     try:
@@ -66,14 +73,18 @@ if COL_TIPO in gdf.columns:
 st.sidebar.header("Filtros")
 
 # Tipo
-tipos_disponibles = sorted(gdf[COL_TIPO].dropna().astype(str).unique()) if COL_TIPO in gdf.columns else []
+tipos_disponibles = (
+    sorted(gdf[COL_TIPO].dropna().astype(str).unique())
+    if COL_TIPO in gdf.columns
+    else []
+)
 tipos_seleccionados = st.sidebar.multiselect(
     "Tipo de evento",
     options=tipos_disponibles,
     default=tipos_disponibles,
 ) if tipos_disponibles else []
 
-# Región
+# Región (ordenada por 'orden')
 regiones = (
     gdf[[COL_REGION, COL_ORDEN]]
     .dropna(subset=[COL_REGION])
@@ -129,7 +140,7 @@ if (
 st.caption(f"Registros visualizados (filas GeoJSON): {len(gdf_filtrado)}")
 
 # ------------------------------------------------------------------
-# KPI NACIONALES POR EVENTO (UN códigoMeteo = 1 evento)
+# KPI NACIONALES (EVENTOS ÚNICOS POR codigoMeteo + tipo)
 # ------------------------------------------------------------------
 def kpi_card(title: str, value: int, bg_color: str):
     st.markdown(
@@ -150,7 +161,6 @@ def kpi_card(title: str, value: int, bg_color: str):
         unsafe_allow_html=True,
     )
 
-# eventos únicos a nivel nacional
 if {COL_CODIGO, COL_TIPO}.issubset(gdf_filtrado.columns):
     eventos_nacionales = gdf_filtrado[[COL_CODIGO, COL_TIPO]].drop_duplicates()
     count_aviso = eventos_nacionales[eventos_nacionales[COL_TIPO] == "Aviso"].shape[0]
@@ -178,7 +188,6 @@ with left_col:
     st.subheader("Avisos, Alertas y Alarmas por región (eventos únicos)")
 
     if {COL_REGION, COL_ORDEN, COL_CODIGO}.issubset(gdf_filtrado.columns):
-        # cada combinación codigoMeteo + reg es un evento único en esa región
         df_reg = (
             gdf_filtrado[[COL_REGION, COL_ORDEN, COL_CODIGO]]
             .dropna(subset=[COL_REGION])
@@ -189,17 +198,33 @@ with left_col:
             .sort_values(COL_ORDEN)
         )
 
-        # index ordenado por 'orden'
-        df_reg_plot = df_reg.set_index(COL_REGION)["Total"]
-        st.bar_chart(df_reg_plot, use_container_width=True)
+        # gráfico con Altair respetando el orden de 'orden'
+        orden_regiones = df_reg.sort_values(COL_ORDEN)[COL_REGION].tolist()
+        chart = (
+            alt.Chart(df_reg)
+            .mark_bar()
+            .encode(
+                x=alt.X(
+                    COL_REGION,
+                    sort=orden_regiones,
+                    title="Región",
+                ),
+                y=alt.Y("Total:Q", title="Número de eventos"),
+                tooltip=[COL_REGION, "Total"],
+            )
+            .properties(height=350, width="container")
+        )
+        st.altair_chart(chart, use_container_width=True)
     else:
         st.info("No hay información suficiente para agrupar por región.")
 
-    # TABLA DETALLADA: evento-región únicos
+    # TABLA DETALLADA: evento–región únicos
     st.subheader("Detalle de eventos por región")
 
-    columnas = []
+    # columnas que queremos mostrar
+    columnas_base = []
     renombres = {}
+
     for col, nombre in [
         (COL_TIPO, "Tipo"),
         (COL_REGION, "Región"),
@@ -209,12 +234,15 @@ with left_col:
         (COL_ESTADO, "Estado"),
     ]:
         if col in gdf_filtrado.columns:
-            columnas.append(col)
+            columnas_base.append(col)
             renombres[col] = nombre
 
-    if columnas:
+    # quitar duplicados en la lista de columnas (por si acaso)
+    columnas_base = list(dict.fromkeys(columnas_base))
+
+    if columnas_base:
         df_tabla = (
-            gdf_filtrado[columnas + [COL_CODIGO, COL_REGION]]
+            gdf_filtrado[columnas_base]
             .drop_duplicates(subset=[COL_CODIGO, COL_REGION])
             .rename(columns=renombres)
         )
@@ -225,51 +253,57 @@ with left_col:
 with right_col:
     st.subheader("Mapa de eventos activos")
 
-    if gdf_filtrado.geometry.notna().any():
+    if "geometry" in gdf_filtrado.columns and gdf_filtrado.geometry.notna().any():
         view_state = pdk.ViewState(latitude=-30.5, longitude=-71.0, zoom=3.4)
 
-        # construimos un GeoJSON ligero para el mapa
-        data_geojson = []
+        features = []
         for _, row in gdf_filtrado.iterrows():
-            feature = {
-                "type": "Feature",
-                "properties": {
-                    "tipo": str(row.get(COL_TIPO, "")),
-                    "region": str(row.get(COL_REGION, "")),
-                    "codigo": str(row.get(COL_CODIGO, "")),
-                    "fenomeno": str(row.get(COL_FENOMENO, "")),
-                },
-                "geometry": row.geometry.__geo_interface__,
+            geom = row.geometry
+            if geom is None:
+                continue
+            features.append(
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "tipo": str(row.get(COL_TIPO, "")),
+                        "region": str(row.get(COL_REGION, "")),
+                        "codigo": str(row.get(COL_CODIGO, "")),
+                        "fenomeno": str(row.get(COL_FENOMENO, "")),
+                    },
+                    "geometry": geom.__geo_interface__,
+                }
+            )
+
+        if features:
+            layer = pdk.Layer(
+                "GeoJsonLayer",
+                data={"type": "FeatureCollection", "features": features},
+                opacity=0.6,
+                stroked=True,
+                filled=True,
+                get_fill_color="properties.tipo === 'Aviso' ? [255,230,128,160] : "
+                               "properties.tipo === 'Alerta' ? [255,165,0,180] : "
+                               "properties.tipo === 'Alarma' ? [255,0,0,200] : [150,150,150,140]",
+                get_line_color=[80, 80, 80, 200],
+                line_width_min_pixels=1,
+                pickable=True,
+            )
+
+            tooltip = {
+                "html": "<b>{tipo}</b><br/>Región: {region}<br/>Código: {codigo}<br/>Fenómeno: {fenomeno}",
+                "style": {"backgroundColor": "rgba(0,0,0,0.8)", "color": "white"},
             }
-            data_geojson.append(feature)
 
-        layer = pdk.Layer(
-            "GeoJsonLayer",
-            data={"type": "FeatureCollection", "features": data_geojson},
-            opacity=0.6,
-            stroked=True,
-            filled=True,
-            get_fill_color="properties.tipo === 'Aviso' ? [255,230,128,160] : "
-                           "properties.tipo === 'Alerta' ? [255,165,0,180] : "
-                           "properties.tipo === 'Alarma' ? [255,0,0,200] : [150,150,150,140]",
-            get_line_color=[80, 80, 80, 200],
-            line_width_min_pixels=1,
-            pickable=True,
-        )
+            deck = pdk.Deck(
+                layers=[layer],
+                initial_view_state=view_state,
+                tooltip=tooltip,
+                map_style=None,  # evita depender de token de Mapbox
+            )
 
-        tooltip = {
-            "html": "<b>{tipo}</b><br/>Región: {region}<br/>Código: {codigo}<br/>Fenómeno: {fenomeno}",
-            "style": {"backgroundColor": "rgba(0,0,0,0.8)", "color": "white"},
-        }
-
-        deck = pdk.Deck(
-            layers=[layer],
-            initial_view_state=view_state,
-            tooltip=tooltip,
-            map_style="mapbox://styles/mapbox/dark-v10",
-        )
-
-        st.pydeck_chart(deck, use_container_width=True)
+            st.pydeck_chart(deck, use_container_width=True)
+        else:
+            st.info("No hay geometrías válidas para mostrar en el mapa.")
     else:
         st.info("No hay geometrías disponibles para mostrar en el mapa.")
 
