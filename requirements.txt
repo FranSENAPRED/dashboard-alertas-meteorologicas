@@ -6,3 +6,4 @@ pydeck
 shapely
 pyproj
 fiona
+altair
