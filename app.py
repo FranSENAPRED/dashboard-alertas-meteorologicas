@@ -8,6 +8,7 @@ import geopandas as gpd
 import pydeck as pdk
 import streamlit as st
 import altair as alt
+from streamlit_autorefresh import st_autorefresh  # <-- NUEVO
 
 # ------------------------------------------------------------------
 # CONFIGURACIÓN BÁSICA
@@ -17,6 +18,9 @@ st.set_page_config(
     layout="wide",
     page_icon="🌦️",
 )
+
+# Auto-refresh cada 60 segundos (1 minuto)  <-- NUEVO
+st_autorefresh(interval=60 * 1000, key="alertas-refresh")
 
 st.title("Sistema de Monitoreo Meteorológico - DMC")
 st.caption("Visualización de Avisos, Alertas y Alarmas meteorológicas a partir de datos GeoJSON oficiales.")
@@ -314,4 +318,3 @@ with st.expander("Ver datos en bruto (GeoDataFrame)"):
     st.write(gdf.head())
     st.text("Columnas disponibles:")
     st.write(list(gdf.columns))
-
