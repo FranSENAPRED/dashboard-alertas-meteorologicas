@@ -35,7 +35,7 @@ COL_FENOMENO = "fenomeno"    # opcional
 # ------------------------------------------------------------------
 # CARGA DE DATOS
 # ------------------------------------------------------------------
-@st.cache_data(show_spinner=True)
+@st.cache_data(ttl=60, show_spinner=True)
 def load_data(url: str) -> gpd.GeoDataFrame:
     resp = requests.get(url, timeout=30)
     resp.raise_for_status()
