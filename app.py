@@ -236,8 +236,8 @@ def kpi_card(title: str, value: int, bg_color: str):
         unsafe_allow_html=True,
     )
 
-def last_alert_card(fecha_ultima, codigo_ultimo):
-    """Cuadrante con fecha/hora de última emisión, código y tiempo transcurrido."""
+def last_alert_card(fecha_ultima, codigo_ultimo, tipo_ultimo, fenomeno_ultimo):
+    """Cuadrante con fecha/hora de última emisión, código (con color), fenómeno y tiempo transcurrido."""
     if fecha_ultima is None or pd.isna(fecha_ultima):
         contenido = """
         <div style="
@@ -259,6 +259,17 @@ def last_alert_card(fecha_ultima, codigo_ultimo):
         st.markdown(contenido, unsafe_allow_html=True)
         return
 
+    # Color del código según tipo
+    tipo_norm = (tipo_ultimo or "").strip().title()
+    if tipo_norm == "Aviso":
+        code_color = "#d68910"   # amarillo/naranjo
+    elif tipo_norm == "Alerta":
+        code_color = "#e67e22"   # naranjo fuerte
+    elif tipo_norm == "Alarma":
+        code_color = "#c0392b"   # rojo
+    else:
+        code_color = "#34495e"   # neutro
+
     # Hora actual en Chile
     ahora_tz = pd.Timestamp.now(tz="America/Santiago")
     ahora = ahora_tz.tz_localize(None) if ahora_tz.tzinfo else ahora_tz
@@ -277,7 +288,8 @@ def last_alert_card(fecha_ultima, codigo_ultimo):
     delta_str = "  ".join(partes)
 
     fecha_str = fecha_ultima.strftime("%d-%m-%Y %H:%M")
-    codigo_str = f"Código: {codigo_ultimo}" if codigo_ultimo else ""
+    codigo_str = codigo_ultimo or ""
+    fenomeno_str = fenomeno_ultimo or ""
 
     contenido = f"""
     <div style="
@@ -294,8 +306,17 @@ def last_alert_card(fecha_ultima, codigo_ultimo):
         <div style="font-size:0.95rem;margin-bottom:0.15rem;">
             {fecha_str} hrs
         </div>
+        <div style="font-size:0.9rem;margin-bottom:0.15rem;">
+            Tipo: {tipo_norm}
+        </div>
+        <div style="font-size:0.9rem;margin-bottom:0.15rem;">
+            Código:
+            <span style="font-weight:700;color:{code_color};">
+                {codigo_str}
+            </span>
+        </div>
         <div style="font-size:0.9rem;margin-bottom:0.35rem;">
-            {codigo_str}
+            Fenómeno: {fenomeno_str}
         </div>
         <div style="font-size:0.85rem;color:#555;margin-bottom:0.2rem;">
             Tiempo transcurrido
@@ -316,14 +337,18 @@ if {COL_CODIGO, COL_TIPO}.issubset(gdf_filtrado.columns):
 else:
     count_aviso = count_alerta = count_alarma = 0
 
-# última fecha de emisión y su código (dataset completo, no filtrado)
+# última fecha de emisión y datos asociados (dataset completo, no filtrado)
 if COL_FECHA in gdf.columns and gdf[COL_FECHA].notna().any():
     idx_last = gdf[COL_FECHA].idxmax()
     ultima_fecha = gdf.at[idx_last, COL_FECHA]
     ultimo_codigo = gdf.at[idx_last, COL_CODIGO] if COL_CODIGO in gdf.columns else None
+    ultimo_tipo = gdf.at[idx_last, COL_TIPO] if COL_TIPO in gdf.columns else None
+    ultimo_fenomeno = gdf.at[idx_last, COL_FENOMENO] if COL_FENOMENO in gdf.columns else None
 else:
     ultima_fecha = None
     ultimo_codigo = None
+    ultimo_tipo = None
+    ultimo_fenomeno = None
 
 # 3 KPI + 1 cuadrante de cronómetro arriba a la derecha
 col_k1, col_k2, col_k3, col_k4 = st.columns([1, 1, 1, 1.4])
@@ -334,7 +359,7 @@ with col_k2:
 with col_k3:
     kpi_card("Alarma(s)", count_alarma, "#e74c3c")
 with col_k4:
-    last_alert_card(ultima_fecha, ultimo_codigo)
+    last_alert_card(ultima_fecha, ultimo_codigo, ultimo_tipo, ultimo_fenomeno)
 
 st.markdown("---")
 
@@ -472,3 +497,4 @@ with st.expander("Ver datos en bruto (GeoDataFrame)"):
     st.write(list(gdf.columns))
     if COL_FECHA in gdf.columns:
         st.text(f"Ejemplo de valor parseado en '{COL_FECHA}': {gdf[COL_FECHA].iloc[0]}")
+
