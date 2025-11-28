@@ -8,7 +8,7 @@ import geopandas as gpd
 import pydeck as pdk
 import streamlit as st
 import altair as alt
-from streamlit_autorefresh import st_autorefresh  # <-- auto-refresh
+from streamlit_autorefresh import st_autorefresh
 
 # ------------------------------------------------------------------
 # CONFIGURACIÓN BÁSICA
@@ -32,9 +32,19 @@ COL_CODIGO = "codigoMeteo"
 COL_TIPO = "tipo"
 COL_REGION = "reg"
 COL_ORDEN = "orden"
-COL_FECHA = "fechaEmision"   # ajusta si se llama distinto
+COL_FECHA = "fechaEmision"   # valor por defecto          # <<< CAMBIO (se puede sobreescribir)
 COL_ESTADO = "estado"        # opcional
 COL_FENOMENO = "fenomeno"    # opcional
+
+# posibles nombres de columna de fecha si no existe 'fechaEmision'
+DATE_CANDIDATES = [                                          # <<< CAMBIO
+    "fechaEmision",
+    "fecha_emision",
+    "fecha",
+    "fechaHora",
+    "fechaHoraPublicacion",
+    "fecha_publicacion",
+]
 
 # ------------------------------------------------------------------
 # CARGA DE DATOS
@@ -64,9 +74,25 @@ if gdf.empty:
     st.warning("El archivo GeoJSON se cargó correctamente pero no contiene registros.")
     st.stop()
 
+# ------------------------------------------------------------------
+# DETECCIÓN AUTOMÁTICA DE COLUMNA DE FECHA                  # <<< CAMBIO
+# ------------------------------------------------------------------
+if COL_FECHA not in gdf.columns:
+    for cand in DATE_CANDIDATES:
+        if cand in gdf.columns:
+            COL_FECHA = cand
+            break
+
 # Normalizaciones básicas
 if COL_FECHA in gdf.columns:
-    gdf[COL_FECHA] = pd.to_datetime(gdf[COL_FECHA], errors="coerce")
+    # intento 1: conversión directa
+    gdf[COL_FECHA] = pd.to_datetime(gdf[COL_FECHA], errors="coerce", dayfirst=True)
+
+    # si todo quedó NaT, probablemente tiene texto tipo "hrs." u otros
+    if gdf[COL_FECHA].notna().sum() == 0:
+        # volvemos a tomar la columna original como texto y limpiamos un poco
+        raw = gdf[COL_FECHA].astype(str).str.replace("hrs.", "", regex=False)
+        gdf[COL_FECHA] = pd.to_datetime(raw, errors="coerce", dayfirst=True)
 
 if COL_TIPO in gdf.columns:
     gdf[COL_TIPO] = gdf[COL_TIPO].astype(str).str.title()
@@ -165,10 +191,10 @@ def kpi_card(title: str, value: int, bg_color: str):
         unsafe_allow_html=True,
     )
 
-def last_alert_card(fecha_ultima):
+def last_alert_card(fecha_ultima, col_name):  # <<< CAMBIO: también recibe nombre de columna
     """Cuadrante con fecha/hora de última emisión y tiempo transcurrido."""
     if fecha_ultima is None or pd.isna(fecha_ultima):
-        contenido = """
+        contenido = f"""
         <div style="
             background-color:#ecf0f1;
             padding:1.2rem;
@@ -181,7 +207,8 @@ def last_alert_card(fecha_ultima):
                 Última emisión de alerta
             </div>
             <div style="font-size:0.95rem;">
-                Sin información disponible.
+                Sin información disponible.<br/>
+                Columna usada: <code>{col_name}</code>
             </div>
         </div>
         """
@@ -246,7 +273,7 @@ with col_k2:
 with col_k3:
     kpi_card("Alarma(s)", count_alarma, "#e74c3c")
 with col_k4:
-    last_alert_card(ultima_fecha)
+    last_alert_card(ultima_fecha, COL_FECHA)  # <<< CAMBIO
 
 st.markdown("---")
 
@@ -385,3 +412,4 @@ with st.expander("Ver datos en bruto (GeoDataFrame)"):
     st.write(gdf.head())
     st.text("Columnas disponibles:")
     st.write(list(gdf.columns))
+    st.text(f"Columna de fecha utilizada: {COL_FECHA}")      # <<< CAMBIO
