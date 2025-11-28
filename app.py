@@ -2,6 +2,10 @@
 # Dashboard de Alertas Meteorológicas DMC en Streamlit
 
 import io
+import re
+import unicodedata
+from datetime import datetime
+
 import requests
 import pandas as pd
 import geopandas as gpd
@@ -32,19 +36,73 @@ COL_CODIGO = "codigoMeteo"
 COL_TIPO = "tipo"
 COL_REGION = "reg"
 COL_ORDEN = "orden"
-COL_FECHA = "fechaEmision"   # valor por defecto          # <<< CAMBIO (se puede sobreescribir)
+COL_FECHA = "emision"        # <-- AQUÍ va la fecha en texto ("Viernes 28 de ...")
 COL_ESTADO = "estado"        # opcional
 COL_FENOMENO = "fenomeno"    # opcional
 
-# posibles nombres de columna de fecha si no existe 'fechaEmision'
-DATE_CANDIDATES = [                                          # <<< CAMBIO
-    "fechaEmision",
-    "fecha_emision",
-    "fecha",
-    "fechaHora",
-    "fechaHoraPublicacion",
-    "fecha_publicacion",
-]
+# ------------------------------------------------------------------
+# FUNCIONES PARA PARSEAR "emision"
+# ------------------------------------------------------------------
+# normalizar texto (sacar tildes)
+def _strip_accents(s: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFD", s)
+        if unicodedata.category(c) != "Mn"
+    )
+
+# meses en español
+MONTHS_ES = {
+    "enero": 1,
+    "febrero": 2,
+    "marzo": 3,
+    "abril": 4,
+    "mayo": 5,
+    "junio": 6,
+    "julio": 7,
+    "agosto": 8,
+    "septiembre": 9,
+    "setiembre": 9,  # por si acaso
+    "octubre": 10,
+    "noviembre": 11,
+    "diciembre": 12,
+}
+
+EMISION_PATTERN = re.compile(
+    r"""^\s*\w+\s+        # día de la semana (Lunes, Martes, ...)
+        (\d{1,2})\s+de\s+ # día
+        ([A-Za-zÁÉÍÓÚáéíóúñÑ]+)\s+del\s+  # mes
+        (\d{4})\s+a\s+las\s+
+        (\d{1,2}):(\d{2})                 # hora:min
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+def parse_emision_text(value: str):
+    """Convierte 'Viernes 28 de noviembre del 2025 a las 13:32 hrs.' en datetime."""
+    if pd.isna(value):
+        return pd.NaT
+    text = str(value)
+    # quitar 'hrs.' u otros textos al final
+    text = text.replace("hrs.", "").replace("hrs", "").strip()
+
+    m = EMISION_PATTERN.match(text)
+    if not m:
+        return pd.NaT
+
+    day = int(m.group(1))
+    month_name = _strip_accents(m.group(2).lower())
+    year = int(m.group(3))
+    hour = int(m.group(4))
+    minute = int(m.group(5))
+
+    month = MONTHS_ES.get(month_name)
+    if month is None:
+        return pd.NaT
+
+    try:
+        return datetime(year, month, day, hour, minute)
+    except Exception:
+        return pd.NaT
 
 # ------------------------------------------------------------------
 # CARGA DE DATOS
@@ -75,24 +133,11 @@ if gdf.empty:
     st.stop()
 
 # ------------------------------------------------------------------
-# DETECCIÓN AUTOMÁTICA DE COLUMNA DE FECHA                  # <<< CAMBIO
+# NORMALIZACIONES
 # ------------------------------------------------------------------
-if COL_FECHA not in gdf.columns:
-    for cand in DATE_CANDIDATES:
-        if cand in gdf.columns:
-            COL_FECHA = cand
-            break
-
-# Normalizaciones básicas
+# parsear columna 'emision' a datetime
 if COL_FECHA in gdf.columns:
-    # intento 1: conversión directa
-    gdf[COL_FECHA] = pd.to_datetime(gdf[COL_FECHA], errors="coerce", dayfirst=True)
-
-    # si todo quedó NaT, probablemente tiene texto tipo "hrs." u otros
-    if gdf[COL_FECHA].notna().sum() == 0:
-        # volvemos a tomar la columna original como texto y limpiamos un poco
-        raw = gdf[COL_FECHA].astype(str).str.replace("hrs.", "", regex=False)
-        gdf[COL_FECHA] = pd.to_datetime(raw, errors="coerce", dayfirst=True)
+    gdf[COL_FECHA] = gdf[COL_FECHA].apply(parse_emision_text)
 
 if COL_TIPO in gdf.columns:
     gdf[COL_TIPO] = gdf[COL_TIPO].astype(str).str.title()
@@ -132,7 +177,7 @@ region_sel = st.sidebar.selectbox(
     index=0,
 )
 
-# Rango de fechas
+# Rango de fechas (ya como datetime)
 if COL_FECHA in gdf.columns and gdf[COL_FECHA].notna().any():
     min_date = gdf[COL_FECHA].min().date()
     max_date = gdf[COL_FECHA].max().date()
@@ -170,7 +215,7 @@ if (
 st.caption(f"Registros visualizados (filas GeoJSON): {len(gdf_filtrado)}")
 
 # ------------------------------------------------------------------
-# KPI NACIONALES (EVENTOS ÚNICOS POR codigoMeteo + tipo)
+# KPI NACIONALES Y CRONÓMETRO
 # ------------------------------------------------------------------
 def kpi_card(title: str, value: int, bg_color: str):
     st.markdown(
@@ -191,10 +236,10 @@ def kpi_card(title: str, value: int, bg_color: str):
         unsafe_allow_html=True,
     )
 
-def last_alert_card(fecha_ultima, col_name):  # <<< CAMBIO: también recibe nombre de columna
+def last_alert_card(fecha_ultima):
     """Cuadrante con fecha/hora de última emisión y tiempo transcurrido."""
     if fecha_ultima is None or pd.isna(fecha_ultima):
-        contenido = f"""
+        contenido = """
         <div style="
             background-color:#ecf0f1;
             padding:1.2rem;
@@ -207,16 +252,14 @@ def last_alert_card(fecha_ultima, col_name):  # <<< CAMBIO: también recibe nomb
                 Última emisión de alerta
             </div>
             <div style="font-size:0.95rem;">
-                Sin información disponible.<br/>
-                Columna usada: <code>{col_name}</code>
+                Sin información disponible.
             </div>
         </div>
         """
         st.markdown(contenido, unsafe_allow_html=True)
         return
 
-    # tiempo transcurrido
-    ahora = pd.Timestamp.now(tz=fecha_ultima.tz) if getattr(fecha_ultima, "tz", None) else pd.Timestamp.now()
+    ahora = pd.Timestamp.now()
     delta = ahora - fecha_ultima
     dias = delta.days
     horas, resto = divmod(delta.seconds, 3600)
@@ -273,7 +316,7 @@ with col_k2:
 with col_k3:
     kpi_card("Alarma(s)", count_alarma, "#e74c3c")
 with col_k4:
-    last_alert_card(ultima_fecha, COL_FECHA)  # <<< CAMBIO
+    last_alert_card(ultima_fecha)
 
 st.markdown("---")
 
@@ -296,7 +339,6 @@ with left_col:
             .sort_values(COL_ORDEN)
         )
 
-        # gráfico con Altair respetando el orden de 'orden'
         orden_regiones = df_reg.sort_values(COL_ORDEN)[COL_REGION].tolist()
         chart = (
             alt.Chart(df_reg)
@@ -319,7 +361,6 @@ with left_col:
     # TABLA DETALLADA: evento–región únicos
     st.subheader("Detalle de eventos por región")
 
-    # columnas que queremos mostrar
     columnas_base = []
     renombres = {}
 
@@ -335,7 +376,6 @@ with left_col:
             columnas_base.append(col)
             renombres[col] = nombre
 
-    # quitar duplicados en la lista de columnas (por si acaso)
     columnas_base = list(dict.fromkeys(columnas_base))
 
     if columnas_base:
@@ -396,7 +436,7 @@ with right_col:
                 layers=[layer],
                 initial_view_state=view_state,
                 tooltip=tooltip,
-                map_style=None,  # evita depender de token de Mapbox
+                map_style=None,
             )
 
             st.pydeck_chart(deck, use_container_width=True, width=500, height=700)
@@ -412,4 +452,5 @@ with st.expander("Ver datos en bruto (GeoDataFrame)"):
     st.write(gdf.head())
     st.text("Columnas disponibles:")
     st.write(list(gdf.columns))
-    st.text(f"Columna de fecha utilizada: {COL_FECHA}")      # <<< CAMBIO
+    st.text(f"Ejemplo de valor 'emision': {gdf[COL_FECHA].iloc[0] if COL_FECHA in gdf.columns else 'N/A'}")
+
