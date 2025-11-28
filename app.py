@@ -8,7 +8,7 @@ import geopandas as gpd
 import pydeck as pdk
 import streamlit as st
 import altair as alt
-from streamlit_autorefresh import st_autorefresh  # <-- NUEVO
+from streamlit_autorefresh import st_autorefresh  # <-- auto-refresh
 
 # ------------------------------------------------------------------
 # CONFIGURACIÓN BÁSICA
@@ -19,7 +19,7 @@ st.set_page_config(
     page_icon="🌦️",
 )
 
-# Auto-refresh cada 60 segundos (1 minuto)  <-- NUEVO
+# Auto-refresh cada 60 segundos (1 minuto)
 st_autorefresh(interval=60 * 1000, key="alertas-refresh")
 
 st.title("Sistema de Monitoreo Meteorológico - DMC")
@@ -165,6 +165,64 @@ def kpi_card(title: str, value: int, bg_color: str):
         unsafe_allow_html=True,
     )
 
+def last_alert_card(fecha_ultima):
+    """Cuadrante con fecha/hora de última emisión y tiempo transcurrido."""
+    if fecha_ultima is None or pd.isna(fecha_ultima):
+        contenido = """
+        <div style="
+            background-color:#ecf0f1;
+            padding:1.2rem;
+            border-radius:0.75rem;
+            text-align:left;
+            font-family:system-ui, sans-serif;
+            box-shadow:0 2px 4px rgba(0,0,0,0.1);
+        ">
+            <div style="font-size:1.1rem;font-weight:600;margin-bottom:0.4rem;">
+                Última emisión de alerta
+            </div>
+            <div style="font-size:0.95rem;">
+                Sin información disponible.
+            </div>
+        </div>
+        """
+        st.markdown(contenido, unsafe_allow_html=True)
+        return
+
+    # tiempo transcurrido
+    ahora = pd.Timestamp.now(tz=fecha_ultima.tz) if getattr(fecha_ultima, "tz", None) else pd.Timestamp.now()
+    delta = ahora - fecha_ultima
+    dias = delta.days
+    horas, resto = divmod(delta.seconds, 3600)
+    minutos, _ = divmod(resto, 60)
+
+    fecha_str = fecha_ultima.strftime("%d-%m-%Y %H:%M")
+
+    contenido = f"""
+    <div style="
+        background-color:#ecf0f1;
+        padding:1.2rem;
+        border-radius:0.75rem;
+        text-align:left;
+        font-family:system-ui, sans-serif;
+        box-shadow:0 2px 4px rgba(0,0,0,0.1);
+    ">
+        <div style="font-size:1.1rem;font-weight:600;margin-bottom:0.4rem;">
+            Última emisión de alerta
+        </div>
+        <div style="font-size:0.95rem;margin-bottom:0.3rem;">
+            {fecha_str} hrs
+        </div>
+        <div style="font-size:0.85rem;color:#555;margin-bottom:0.2rem;">
+            Tiempo transcurrido
+        </div>
+        <div style="font-size:1.3rem;font-weight:700;">
+            {dias} d&nbsp;&nbsp;{horas} h&nbsp;&nbsp;{minutos} min
+        </div>
+    </div>
+    """
+    st.markdown(contenido, unsafe_allow_html=True)
+
+# conteo nacional
 if {COL_CODIGO, COL_TIPO}.issubset(gdf_filtrado.columns):
     eventos_nacionales = gdf_filtrado[[COL_CODIGO, COL_TIPO]].drop_duplicates()
     count_aviso = eventos_nacionales[eventos_nacionales[COL_TIPO] == "Aviso"].shape[0]
@@ -173,13 +231,22 @@ if {COL_CODIGO, COL_TIPO}.issubset(gdf_filtrado.columns):
 else:
     count_aviso = count_alerta = count_alarma = 0
 
-col_k1, col_k2, col_k3 = st.columns(3)
+# última fecha de emisión (sobre el dataset completo, no filtrado)
+if COL_FECHA in gdf.columns and gdf[COL_FECHA].notna().any():
+    ultima_fecha = gdf[COL_FECHA].max()
+else:
+    ultima_fecha = None
+
+# 3 KPI + 1 cuadrante de cronómetro arriba a la derecha
+col_k1, col_k2, col_k3, col_k4 = st.columns([1, 1, 1, 1.4])
 with col_k1:
     kpi_card("Aviso(s)", count_aviso, "#f7e86e")
 with col_k2:
     kpi_card("Alerta(s)", count_alerta, "#f6a623")
 with col_k3:
     kpi_card("Alarma(s)", count_alarma, "#e74c3c")
+with col_k4:
+    last_alert_card(ultima_fecha)
 
 st.markdown("---")
 
