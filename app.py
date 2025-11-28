@@ -36,21 +36,20 @@ COL_CODIGO = "codigoMeteo"
 COL_TIPO = "tipo"
 COL_REGION = "reg"
 COL_ORDEN = "orden"
-COL_FECHA = "emision"        # <-- AQUÍ va la fecha en texto ("Viernes 28 de ...")
+COL_FECHA = "emision"        # aquí viene la fecha como texto
 COL_ESTADO = "estado"        # opcional
 COL_FENOMENO = "fenomeno"    # opcional
 
 # ------------------------------------------------------------------
 # FUNCIONES PARA PARSEAR "emision"
 # ------------------------------------------------------------------
-# normalizar texto (sacar tildes)
 def _strip_accents(s: str) -> str:
+    """Elimina tildes para normalizar los nombres de meses."""
     return "".join(
         c for c in unicodedata.normalize("NFD", s)
         if unicodedata.category(c) != "Mn"
     )
 
-# meses en español
 MONTHS_ES = {
     "enero": 1,
     "febrero": 2,
@@ -61,16 +60,18 @@ MONTHS_ES = {
     "julio": 7,
     "agosto": 8,
     "septiembre": 9,
-    "setiembre": 9,  # por si acaso
+    "setiembre": 9,
     "octubre": 10,
     "noviembre": 11,
     "diciembre": 12,
 }
 
+# Ejemplo de texto:
+# "Viernes 28 de noviembre del 2025 a las 13:32 hrs."
 EMISION_PATTERN = re.compile(
-    r"""^\s*\w+\s+        # día de la semana (Lunes, Martes, ...)
+    r"""^\s*\w+\s+        # día de la semana
         (\d{1,2})\s+de\s+ # día
-        ([A-Za-zÁÉÍÓÚáéíóúñÑ]+)\s+del\s+  # mes
+        ([A-Za-zÁÉÍÓÚáéíóúñÑ]+)\s+del\s+  # mes en español
         (\d{4})\s+a\s+las\s+
         (\d{1,2}):(\d{2})                 # hora:min
     """,
@@ -82,7 +83,6 @@ def parse_emision_text(value: str):
     if pd.isna(value):
         return pd.NaT
     text = str(value)
-    # quitar 'hrs.' u otros textos al final
     text = text.replace("hrs.", "").replace("hrs", "").strip()
 
     m = EMISION_PATTERN.match(text)
@@ -135,7 +135,7 @@ if gdf.empty:
 # ------------------------------------------------------------------
 # NORMALIZACIONES
 # ------------------------------------------------------------------
-# parsear columna 'emision' a datetime
+# Parsear columna 'emision' a datetime
 if COL_FECHA in gdf.columns:
     gdf[COL_FECHA] = gdf[COL_FECHA].apply(parse_emision_text)
 
@@ -236,8 +236,8 @@ def kpi_card(title: str, value: int, bg_color: str):
         unsafe_allow_html=True,
     )
 
-def last_alert_card(fecha_ultima):
-    """Cuadrante con fecha/hora de última emisión y tiempo transcurrido."""
+def last_alert_card(fecha_ultima, codigo_ultimo):
+    """Cuadrante con fecha/hora de última emisión, código y tiempo transcurrido."""
     if fecha_ultima is None or pd.isna(fecha_ultima):
         contenido = """
         <div style="
@@ -259,13 +259,25 @@ def last_alert_card(fecha_ultima):
         st.markdown(contenido, unsafe_allow_html=True)
         return
 
-    ahora = pd.Timestamp.now()
+    # Hora actual en Chile
+    ahora_tz = pd.Timestamp.now(tz="America/Santiago")
+    ahora = ahora_tz.tz_localize(None) if ahora_tz.tzinfo else ahora_tz
+
     delta = ahora - fecha_ultima
     dias = delta.days
     horas, resto = divmod(delta.seconds, 3600)
     minutos, _ = divmod(resto, 60)
 
+    partes = []
+    if dias > 0:
+        partes.append(f"{dias} d")
+    if horas > 0 or dias > 0:
+        partes.append(f"{horas} h")
+    partes.append(f"{minutos} min")
+    delta_str = "  ".join(partes)
+
     fecha_str = fecha_ultima.strftime("%d-%m-%Y %H:%M")
+    codigo_str = f"Código: {codigo_ultimo}" if codigo_ultimo else ""
 
     contenido = f"""
     <div style="
@@ -279,14 +291,17 @@ def last_alert_card(fecha_ultima):
         <div style="font-size:1.1rem;font-weight:600;margin-bottom:0.4rem;">
             Última emisión de alerta
         </div>
-        <div style="font-size:0.95rem;margin-bottom:0.3rem;">
+        <div style="font-size:0.95rem;margin-bottom:0.15rem;">
             {fecha_str} hrs
+        </div>
+        <div style="font-size:0.9rem;margin-bottom:0.35rem;">
+            {codigo_str}
         </div>
         <div style="font-size:0.85rem;color:#555;margin-bottom:0.2rem;">
             Tiempo transcurrido
         </div>
         <div style="font-size:1.3rem;font-weight:700;">
-            {dias} d&nbsp;&nbsp;{horas} h&nbsp;&nbsp;{minutos} min
+            {delta_str}
         </div>
     </div>
     """
@@ -301,11 +316,14 @@ if {COL_CODIGO, COL_TIPO}.issubset(gdf_filtrado.columns):
 else:
     count_aviso = count_alerta = count_alarma = 0
 
-# última fecha de emisión (sobre el dataset completo, no filtrado)
+# última fecha de emisión y su código (dataset completo, no filtrado)
 if COL_FECHA in gdf.columns and gdf[COL_FECHA].notna().any():
-    ultima_fecha = gdf[COL_FECHA].max()
+    idx_last = gdf[COL_FECHA].idxmax()
+    ultima_fecha = gdf.at[idx_last, COL_FECHA]
+    ultimo_codigo = gdf.at[idx_last, COL_CODIGO] if COL_CODIGO in gdf.columns else None
 else:
     ultima_fecha = None
+    ultimo_codigo = None
 
 # 3 KPI + 1 cuadrante de cronómetro arriba a la derecha
 col_k1, col_k2, col_k3, col_k4 = st.columns([1, 1, 1, 1.4])
@@ -316,7 +334,7 @@ with col_k2:
 with col_k3:
     kpi_card("Alarma(s)", count_alarma, "#e74c3c")
 with col_k4:
-    last_alert_card(ultima_fecha)
+    last_alert_card(ultima_fecha, ultimo_codigo)
 
 st.markdown("---")
 
@@ -452,5 +470,5 @@ with st.expander("Ver datos en bruto (GeoDataFrame)"):
     st.write(gdf.head())
     st.text("Columnas disponibles:")
     st.write(list(gdf.columns))
-    st.text(f"Ejemplo de valor 'emision': {gdf[COL_FECHA].iloc[0] if COL_FECHA in gdf.columns else 'N/A'}")
-
+    if COL_FECHA in gdf.columns:
+        st.text(f"Ejemplo de valor parseado en '{COL_FECHA}': {gdf[COL_FECHA].iloc[0]}")
