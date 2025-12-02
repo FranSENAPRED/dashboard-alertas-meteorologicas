@@ -379,13 +379,21 @@ with left_col:
     st.subheader("Avisos, Alertas y Alarmas por región (eventos únicos)")
 
     if {COL_REGION, COL_ORDEN, COL_CODIGO, COL_TIPO}.issubset(gdf_filtrado.columns):
-        df_reg = (
+        # Base: evento único por región-tipo-código
+        base = (
             gdf_filtrado[[COL_REGION, COL_ORDEN, COL_CODIGO, COL_TIPO]]
-            .dropna(subset=[COL_REGION, COL_TIPO])
+            .dropna(subset=[COL_REGION, COL_TIPO, COL_CODIGO])
             .drop_duplicates()
-            .groupby([COL_REGION, COL_ORDEN, COL_TIPO])[COL_CODIGO]
-            .nunique()
-            .reset_index(name="Total")
+        )
+
+        # Agrupamos: total de eventos + lista de códigos por región-tipo
+        df_reg = (
+            base.groupby([COL_REGION, COL_ORDEN, COL_TIPO])
+            .agg(
+                Total=(COL_CODIGO, "nunique"),
+                codigos=(COL_CODIGO, lambda x: ", ".join(sorted(set(map(str, x))))),
+            )
+            .reset_index()
         )
 
         # Orden de regiones según 'orden'
@@ -399,7 +407,8 @@ with left_col:
             range=["#f7e86e", "#f6a623", "#e74c3c"],
         )
 
-        chart = (
+        # Capa de barras apiladas
+        bars = (
             alt.Chart(df_reg)
             .mark_bar()
             .encode(
@@ -407,19 +416,44 @@ with left_col:
                     COL_REGION,
                     sort=orden_regiones,
                     title="Región",
+                    axis=alt.Axis(labelAngle=-90),  # etiquetas de región verticales
                 ),
-                y=alt.Y("sum(Total):Q", title="Número de eventos"),
+                y=alt.Y(
+                    "sum(Total):Q",
+                    title="",  # sin título
+                    axis=alt.Axis(labels=False, ticks=False, grid=False),
+                ),
                 color=alt.Color(
                     COL_TIPO,
                     title="Tipo",
                     scale=color_scale,
                     legend=alt.Legend(orient="top"),
                 ),
-                tooltip=[COL_REGION, COL_TIPO, "Total:Q"],
+                tooltip=[COL_REGION, COL_TIPO, "codigos:N"],
             )
             .properties(height=350, width="container")
         )
 
+        # Capa de texto con los códigos dentro de las barras
+        text = (
+            alt.Chart(df_reg)
+            .mark_text(
+                baseline="middle",
+                dy=-6,  # un poco hacia arriba dentro de la barra
+                fontSize=10,
+            )
+            .encode(
+                x=alt.X(
+                    COL_REGION,
+                    sort=orden_regiones,
+                ),
+                y=alt.Y("sum(Total):Q"),
+                detail=COL_TIPO,
+                text="codigos:N",
+            )
+        )
+
+        chart = bars + text
         st.altair_chart(chart, use_container_width=True)
     else:
         st.info("No hay información suficiente para agrupar por región y tipo.")
@@ -520,4 +554,3 @@ with st.expander("Ver datos en bruto (GeoDataFrame)"):
     st.write(list(gdf.columns))
     if COL_FECHA in gdf.columns:
         st.text(f"Ejemplo de valor parseado en '{COL_FECHA}': {gdf[COL_FECHA].iloc[0]}")
-
