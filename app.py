@@ -215,7 +215,7 @@ if (
 st.caption(f"Registros visualizados (filas GeoJSON): {len(gdf_filtrado)}")
 
 # ------------------------------------------------------------------
-# KPI NACIONALES Y CRONÓMETRO
+# KPI NACIONALES Y CUADRANTE
 # ------------------------------------------------------------------
 def kpi_card(title: str, value: int, bg_color: str):
     st.markdown(
@@ -237,7 +237,12 @@ def kpi_card(title: str, value: int, bg_color: str):
     )
 
 def last_alert_card(fecha_ultima, codigo_ultimo, tipo_ultimo, fenomeno_ultimo):
-    """Cuadrante con fecha/hora de última emisión, código (con color), fenómeno y tiempo transcurrido."""
+    """
+    Cuadrante con fecha/hora de última emisión relevante, código (con color),
+    fenómeno y tiempo transcurrido.
+    La selección de la "última" se hace con la prioridad:
+    Alarma > Alerta > Aviso.
+    """
     if fecha_ultima is None or pd.isna(fecha_ultima):
         contenido = """
         <div style="
@@ -328,7 +333,7 @@ def last_alert_card(fecha_ultima, codigo_ultimo, tipo_ultimo, fenomeno_ultimo):
     """
     st.markdown(contenido, unsafe_allow_html=True)
 
-# conteo nacional
+# conteo nacional (eventos únicos por codigo + tipo)
 if {COL_CODIGO, COL_TIPO}.issubset(gdf_filtrado.columns):
     eventos_nacionales = gdf_filtrado[[COL_CODIGO, COL_TIPO]].drop_duplicates()
     count_aviso = eventos_nacionales[eventos_nacionales[COL_TIPO] == "Aviso"].shape[0]
@@ -337,18 +342,20 @@ if {COL_CODIGO, COL_TIPO}.issubset(gdf_filtrado.columns):
 else:
     count_aviso = count_alerta = count_alarma = 0
 
-# última fecha de emisión y datos asociados (dataset completo, no filtrado)
-if COL_FECHA in gdf.columns and gdf[COL_FECHA].notna().any():
-    idx_last = gdf[COL_FECHA].idxmax()
-    ultima_fecha = gdf.at[idx_last, COL_FECHA]
-    ultimo_codigo = gdf.at[idx_last, COL_CODIGO] if COL_CODIGO in gdf.columns else None
-    ultimo_tipo = gdf.at[idx_last, COL_TIPO] if COL_TIPO in gdf.columns else None
-    ultimo_fenomeno = gdf.at[idx_last, COL_FENOMENO] if COL_FENOMENO in gdf.columns else None
-else:
-    ultima_fecha = None
-    ultimo_codigo = None
-    ultimo_tipo = None
-    ultimo_fenomeno = None
+# última emisión con prioridad Alarma > Alerta > Aviso (sobre dataset completo)
+ultima_fecha = ultimo_codigo = ultimo_tipo = ultimo_fenomeno = None
+if COL_FECHA in gdf.columns and COL_TIPO in gdf.columns:
+    for tipo_prior in ["Alarma", "Alerta", "Aviso"]:
+        mask = (gdf[COL_TIPO] == tipo_prior) & gdf[COL_FECHA].notna()
+        subset = gdf[mask]
+        if not subset.empty:
+            idx_last = subset[COL_FECHA].idxmax()
+            row = gdf.loc[idx_last]
+            ultima_fecha = row[COL_FECHA]
+            ultimo_codigo = row.get(COL_CODIGO)
+            ultimo_tipo = row.get(COL_TIPO)
+            ultimo_fenomeno = row.get(COL_FENOMENO)
+            break
 
 # 3 KPI + 1 cuadrante de cronómetro arriba a la derecha
 col_k1, col_k2, col_k3, col_k4 = st.columns([1, 1, 1, 1.4])
@@ -364,25 +371,34 @@ with col_k4:
 st.markdown("---")
 
 # ------------------------------------------------------------------
-# DISTRIBUCIÓN POR REGIÓN (EVENTO-REGIÓN ÚNICO) + TABLA
+# DISTRIBUCIÓN POR REGIÓN (EVENTO-REGIÓN ÚNICO, APILADO POR TIPO)
 # ------------------------------------------------------------------
 left_col, right_col = st.columns([1.2, 1.8])
 
 with left_col:
     st.subheader("Avisos, Alertas y Alarmas por región (eventos únicos)")
 
-    if {COL_REGION, COL_ORDEN, COL_CODIGO}.issubset(gdf_filtrado.columns):
+    if {COL_REGION, COL_ORDEN, COL_CODIGO, COL_TIPO}.issubset(gdf_filtrado.columns):
         df_reg = (
-            gdf_filtrado[[COL_REGION, COL_ORDEN, COL_CODIGO]]
-            .dropna(subset=[COL_REGION])
+            gdf_filtrado[[COL_REGION, COL_ORDEN, COL_CODIGO, COL_TIPO]]
+            .dropna(subset=[COL_REGION, COL_TIPO])
             .drop_duplicates()
-            .groupby([COL_REGION, COL_ORDEN])[COL_CODIGO]
+            .groupby([COL_REGION, COL_ORDEN, COL_TIPO])[COL_CODIGO]
             .nunique()
             .reset_index(name="Total")
-            .sort_values(COL_ORDEN)
         )
 
-        orden_regiones = df_reg.sort_values(COL_ORDEN)[COL_REGION].tolist()
+        # Orden de regiones según 'orden'
+        orden_regiones = (
+            df_reg.sort_values(COL_ORDEN)[COL_REGION].drop_duplicates().tolist()
+        )
+
+        # Colores por tipo
+        color_scale = alt.Scale(
+            domain=["Aviso", "Alerta", "Alarma"],
+            range=["#f7e86e", "#f6a623", "#e74c3c"],
+        )
+
         chart = (
             alt.Chart(df_reg)
             .mark_bar()
@@ -392,14 +408,21 @@ with left_col:
                     sort=orden_regiones,
                     title="Región",
                 ),
-                y=alt.Y("Total:Q", title="Número de eventos"),
-                tooltip=[COL_REGION, "Total"],
+                y=alt.Y("sum(Total):Q", title="Número de eventos"),
+                color=alt.Color(
+                    COL_TIPO,
+                    title="Tipo",
+                    scale=color_scale,
+                    legend=alt.Legend(orient="top"),
+                ),
+                tooltip=[COL_REGION, COL_TIPO, "Total:Q"],
             )
             .properties(height=350, width="container")
         )
+
         st.altair_chart(chart, use_container_width=True)
     else:
-        st.info("No hay información suficiente para agrupar por región.")
+        st.info("No hay información suficiente para agrupar por región y tipo.")
 
     # TABLA DETALLADA: evento–región únicos
     st.subheader("Detalle de eventos por región")
